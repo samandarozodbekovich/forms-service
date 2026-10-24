@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Application form</title>
+<style>
+:root{--bg:#eef1f4;--card:#fff;--ink:#16202b;--muted:#5d6b7a;--line:#c4ccd6;--accent:#0f766e;--err:#b91c1c}
+@media (prefers-color-scheme:dark){:root{--bg:#10161c;--card:#18212a;--ink:#e6ebf0;--muted:#93a1b0;--line:#34414f;--accent:#2dd4bf;--err:#f87171}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:620px;margin:0 auto;padding:24px 16px 64px}
+#root{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:20px}
+h1{font-size:1.5rem;margin:0 0 16px}
+.f{margin-bottom:16px}.f>label{display:block;font-weight:600;margin-bottom:4px}
+input[type=text],input[type=number],input[type=date],select,textarea{width:100%;font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:10px}
+input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button{font:inherit;border:0;border-radius:6px;padding:10px 18px;background:var(--accent);color:#fff;cursor:pointer}
+@media (prefers-color-scheme:dark){button{color:#08201d}}
+#err{color:var(--err);min-height:1.5em}
+</style>
+</head>
+<body>
+<main><div id="root">Loading form...</div></main>
+<script>
+const h = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat()); return e; };
+const slug = location.pathname.split('/').pop();
+const sid = (crypto.randomUUID && crypto.randomUUID()) || Date.now() + Math.random().toString(36).slice(2);
+const post = (url, body, extra = {}) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), ...extra });
+const root = document.getElementById('root');
+
+(async () => {
+  let form;
+  try {
+    const r = await fetch('/api/forms/' + encodeURIComponent(slug));
+    if (r.status === 404) { root.textContent = 'This form does not exist. Check the link you were given.'; return; }
+    if (!r.ok) throw new Error('Could not load this form');
+    form = await r.json();
+  } catch (error) {
+    root.textContent = 'Could not load this form. Please check your connection and try again.';
+    console.error(error);
+    return;
+  }
+  document.title = form.title;
+  const inputs = {};
+  const err = h('p', { id: 'err', role: 'alert' });
+  root.replaceChildren(h('h1', { textContent: form.title }));
+
+  form.fields.forEach((f) => {
+    let el;
+    if (f.type === 'textarea') el = h('textarea', { rows: 4 });
+    else if (f.type === 'select') el = h('select', {}, h('option', { value: '', textContent: 'Choose an option' }), f.options.map((o) => h('option', { value: o, textContent: o })));
+    else el = h('input', { type: f.type });
+    el.id = f.id;
+    el.required = f.required;
+    if (f.type === 'text' || f.type === 'textarea') el.maxLength = 5000;
+    inputs[f.id] = el;
+    // Drop-off tracking: tell the server once when this question is first focused.
+    let sent = false;
+    el.addEventListener('focus', () => {
+      if (sent) return;
+      sent = true;
+      post(`/api/forms/${encodeURIComponent(slug)}/progress`, { sessionId: sid, fieldId: f.id }, { keepalive: true })
+        .catch((error) => console.error('Could not record form progress:', error));
+    });
+    const text = f.label + (f.required ? ' (required)' : '');
+    root.append(h('div', { className: 'f' }, f.type === 'checkbox'
+      ? h('label', {}, el, ' ' + text)
+      : [h('label', { htmlFor: f.id, textContent: text }), el]));
+  });
+
+  const submit = h('button', { textContent: 'Submit application' });
+  submit.onclick = async () => {
+    const invalid = form.fields.map((f) => inputs[f.id]).find((input) => !input.checkValidity());
+    if (invalid) { invalid.reportValidity(); return; }
+    const answers = {};
+    form.fields.forEach((f) => (answers[f.id] = f.type === 'checkbox' ? inputs[f.id].checked : inputs[f.id].value));
+    submit.disabled = true;
+    err.textContent = '';
+    try {
+      const res = await post(`/api/forms/${encodeURIComponent(slug)}/responses`, { sessionId: sid, answers });
+      const data = await res.json();
+      if (!res.ok) { err.textContent = data.error || 'Could not submit your application'; return; }
+      root.replaceChildren(h('h1', { textContent: 'Thank you' }), h('p', { textContent: 'Your application has been submitted.' }));
+    } catch (error) {
+      err.textContent = 'Could not submit your application. Please check your connection and try again.';
+      console.error(error);
+    } finally {
+      submit.disabled = false;
+    }
+  };
+  root.append(err, submit);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Form builder</title>
+<style>
+:root{--bg:#eef1f4;--card:#fff;--ink:#16202b;--muted:#5d6b7a;--line:#d5dbe2;--accent:#0f766e;--warn:#b45309}
+@media (prefers-color-scheme:dark){:root{--bg:#10161c;--card:#18212a;--ink:#e6ebf0;--muted:#93a1b0;--line:#2a3643;--accent:#2dd4bf;--warn:#fbbf24}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:1.6rem;margin:0 0 16px}h2{font-size:1.1rem;margin:0 0 12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}
+input,select,textarea{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:8px;min-width:0}
+input[type=text],#title{width:100%}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row input:not([type=checkbox]){flex:1 1 220px}
+.q{border-top:1px solid var(--line);padding:10px 0;display:grid;gap:8px}
+button{font:inherit;border:0;border-radius:6px;padding:8px 14px;background:var(--accent);color:#fff;cursor:pointer}
+@media (prefers-color-scheme:dark){button{color:#08201d}}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.item{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.muted{color:var(--muted);font-size:.9rem}.warn{color:var(--warn);font-weight:600}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.q-actions{display:flex;gap:6px}
+.q-actions button{padding:5px 10px}
+.q input[type=text]:focus{outline:2px solid var(--accent);outline-offset:2px}
+.bar{display:grid;grid-template-columns:minmax(80px,200px) 1fr 90px;gap:8px;align-items:center;margin:4px 0;font-size:.9rem}
+.track{background:var(--line);height:10px;border-radius:5px;overflow:hidden}.track i{display:block;height:100%;background:var(--accent)}
+.scroll{overflow-x:auto;margin-top:12px}table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+.scroll td{white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:560px){main{padding:16px 12px 40px}.card{padding:12px}.bar{grid-template-columns:minmax(70px,1fr) 1fr 72px;gap:6px;font-size:.8rem}.item{align-items:flex-start;flex-direction:column}.actions{width:100%}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Form builder</h1>
+  <section class="card">
+    <h2>New form</h2>
+    <input id="title" type="text" placeholder="Form title, for example: Summer internship application" aria-label="Form title">
+    <div id="fields"></div>
+    <div class="row"><button class="ghost" id="add">Add question</button><button id="publish">Publish form</button></div>
+    <p id="msg" class="muted" role="status"></p>
+  </section>
+  <section class="card"><h2>Published forms</h2><div id="forms"></div></section>
+  <section class="card" id="results" hidden></section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+// Tiny DOM helper. Text is always set via textContent, so student input cannot inject HTML.
+const h = (tag, props = {}, ...kids) => {
+  const e = document.createElement(tag);
+  Object.entries(props).forEach(([key, value]) => {
+    if (key.startsWith('aria-') || key.startsWith('data-')) e.setAttribute(key, value);
+    else e[key] = value;
+  });
+  e.append(...kids.flat());
+  return e;
+};
+const TYPES = { text: 'Short text', textarea: 'Long text', number: 'Number', select: 'Dropdown', checkbox: 'Checkbox', date: 'Date' };
+const blank = () => ({ label: '', type: 'text', required: false, options: '' });
+let draft = [blank()];
+
+async function api(url, body) {
+  const r = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+function renderDraft() {
+  const box = $('#fields');
+  box.replaceChildren();
+  draft.forEach((f, i) => {
+    const row = h('div', { className: 'q' }, h('div', { className: 'row' },
+      h('input', { type: 'text', placeholder: 'Question', value: f.label, 'aria-label': `Question ${i + 1} text`, oninput: (e) => (f.label = e.target.value) }),
+      h('select', { 'aria-label': 'Answer type', onchange: (e) => { f.type = e.target.value; renderDraft(); } },
+        Object.entries(TYPES).map(([v, t]) => h('option', { value: v, textContent: t, selected: v === f.type }))),
+      h('label', {}, h('input', { type: 'checkbox', checked: f.required, onchange: (e) => (f.required = e.target.checked) }), ' Required'),
+      h('div', { className: 'q-actions' },
+        h('button', { className: 'ghost', textContent: 'Move up', 'aria-label': `Move question ${i + 1} up`, disabled: i === 0, onclick: () => moveQuestion(i, -1) }),
+        h('button', { className: 'ghost', textContent: 'Move down', 'aria-label': `Move question ${i + 1} down`, disabled: i === draft.length - 1, onclick: () => moveQuestion(i, 1) }),
+        h('button', { className: 'ghost', textContent: 'Remove', onclick: () => { draft.splice(i, 1); renderDraft(); } }))));
+    if (f.type === 'select') row.append(h('input', { type: 'text', placeholder: 'Options, separated by commas', value: f.options, 'aria-label': `Dropdown options for question ${i + 1}`, oninput: (e) => (f.options = e.target.value) }));
+    box.append(row);
+  });
+}
+
+function moveQuestion(index, direction) {
+  const destination = index + direction;
+  if (destination < 0 || destination >= draft.length) return;
+  [draft[index], draft[destination]] = [draft[destination], draft[index]];
+  renderDraft();
+}
+
+$('#add').onclick = () => { draft.push(blank()); renderDraft(); };
+$('#publish').onclick = async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  $('#msg').textContent = '';
+  try {
+    const fields = draft.map((f) => ({ ...f, options: f.options.split(',') }));
+    await api('/api/admin/forms', { title: $('#title').value, fields });
+    $('#title').value = ''; draft = [blank()]; renderDraft();
+    $('#msg').textContent = 'Published. Copy the link from the list below.';
+    await loadForms();
+  } catch (e) {
+    $('#msg').textContent = e.message;
+  } finally {
+    button.disabled = false;
+  }
+};
+
+async function loadForms() {
+  const box = $('#forms');
+  box.replaceChildren();
+  let forms;
+  try {
+    forms = await api('/api/admin/forms');
+  } catch (e) {
+    box.append(h('p', { className: 'warn', textContent: 'Could not load forms: ' + e.message }));
+    return;
+  }
+  if (!forms.length) box.append(h('p', { className: 'muted', textContent: 'No forms yet. Build one above and publish it.' }));
+  forms.forEach((f) => {
+    const link = location.origin + '/f/' + f.slug;
+    box.append(h('div', { className: 'item' },
+      h('div', {}, h('strong', { textContent: f.title }), h('div', { className: 'muted' }, h('a', { href: link, target: '_blank', rel: 'noopener noreferrer', textContent: link }), ' (' + f.responseCount + ' responses)')),
+      h('div', { className: 'actions' },
+        h('button', { className: 'ghost', textContent: 'Use as template', onclick: async () => {
+          try {
+            const form = await api(`/api/admin/forms/${f.slug}`);
+            $('#title').value = form.title + ' (copy)';
+            draft = form.fields.map((field) => ({
+              label: field.label,
+              type: field.type,
+              required: field.required,
+              options: field.options ? field.options.join(', ') : '',
+            }));
+            renderDraft();
+            $('#msg').textContent = 'Template copied. Edit the title or questions, then publish a new form.';
+            $('#title').focus();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          } catch (e) {
+            $('#msg').textContent = 'Could not copy this form: ' + e.message;
+          }
+        } }),
+        h('button', { className: 'ghost', textContent: 'View results', onclick: async () => {
+          try {
+            await showResults(f.slug);
+          } catch (e) {
+            $('#msg').textContent = 'Could not load results: ' + e.message;
+          }
+        } }))));
+  });
+}
+
+const show = (v) => (v === true ? 'Yes' : v === false || v === '' || v == null ? '' : String(v));
+
+function csvCell(value) {
+  let text = String(value ?? '');
+  if (/^[\s\u0000-\u001f]*[=+\-@]/.test(text)) text = "'" + text;
+  return '"' + text.replace(/"/g, '""') + '"';
+}
+
+function downloadCsv(form, responses) {
+  const rows = [
+    ['Submitted', ...form.fields.map((field) => field.label)],
+    ...responses.map((response) => [
+      response.createdAt,
+      ...form.fields.map((field) => show(response.answers[field.id])),
+    ]),
+  ];
+  const csv = '\uFEFF' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const link = h('a', { href: url, download: `responses-${form.slug}.csv` });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function showResults(slug) {
+  const { form, responses, stats } = await api(`/api/admin/forms/${slug}/results`);
+  const box = $('#results');
+  box.hidden = false;
+  box.replaceChildren(
+    h('div', { className: 'item' },
+      h('h2', { textContent: 'Results: ' + form.title }),
+      h('button', { className: 'ghost', textContent: 'Export CSV', onclick: () => downloadCsv(form, responses) })),
+    h('p', { textContent: `${stats.started} people opened and started the form, ${stats.submitted} submitted it.` }));
+  // Drop-off: people who reached question i but not question i+1 (or the submit step).
+  const steps = [...stats.reached.map((r) => r.count), stats.submitted];
+  let worst = -1, max = 0;
+  steps.slice(0, -1).forEach((c, i) => { if (c - steps[i + 1] > max) { max = c - steps[i + 1]; worst = i; } });
+  if (worst >= 0) box.append(h('p', { className: 'warn', textContent: `Biggest drop-off: ${max} of ${steps[worst]} people stopped at "${form.fields[worst].label}".` }));
+  stats.reached.forEach((r) => {
+    const pct = stats.started ? Math.round((r.count / stats.started) * 100) : 0;
+    box.append(h('div', { className: 'bar' }, h('span', { textContent: r.label }),
+      h('div', { className: 'track' }, h('i', { style: `width:${pct}%` })), h('b', { textContent: `${r.count} (${pct}%)` })));
+  });
+  box.append(h('h2', { textContent: `Responses (${responses.length})`, style: 'margin-top:20px' }));
+  if (!responses.length) { box.append(h('p', { className: 'muted', textContent: 'No responses yet. Share the form link with students.' })); return; }
+  const table = h('table', {}, h('tr', {}, h('th', { textContent: 'Submitted' }), form.fields.map((f) => h('th', { textContent: f.label }))),
+    responses.map((r) => h('tr', {}, h('td', { textContent: new Date(r.createdAt).toLocaleString() }), form.fields.map((f) => h('td', { textContent: show(r.answers[f.id]) })))));
+  box.append(h('div', { className: 'scroll' }, table));
+}
+
+renderDraft();
+loadForms();
+</script>
+</body>
+</html>
